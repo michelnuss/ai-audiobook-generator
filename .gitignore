@@ -1,0 +1,18 @@
+# Secrets
+app/.env
+
+# Cache
+app/audio_cache/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# Book file (too large for git)
+*.docx
+
+# IDE
+.vscode/
+.idea/
+.cursor/

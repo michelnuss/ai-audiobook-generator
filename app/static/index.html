@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Audiolivro</title>
+  <link rel="stylesheet" href="style.css?v=11">
+</head>
+<body>
+
+<!-- Top bar -->
+<header class="topbar">
+  <h1>Audiolivro</h1>
+  <button id="menuBtn" aria-label="Menu">&#9776;</button>
+</header>
+
+<!-- Reading area -->
+<main class="reading-area" id="readingArea">
+  <!-- Home screen: chapter grid -->
+  <div id="homeScreen">
+    <h2 class="home-heading">Capítulos</h2>
+    <div class="chapter-grid" id="chapterGrid"></div>
+  </div>
+  <!-- Chapter view (hidden until a chapter is opened) -->
+  <div id="chapterView" style="display:none">
+    <button class="back-btn" id="backBtn">&larr; Voltar aos capítulos</button>
+    <div class="chapter-header" id="chapterHeader">
+      <h2 id="chapterTitle"></h2>
+      <div class="chapter-info" id="chapterInfo"></div>
+    </div>
+    <div class="progress-bar-container" id="progressContainer">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div class="chapter-text" id="chapterText"></div>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div>Preparando o áudio...</div>
+    </div>
+  </div>
+</main>
+
+<!-- Continue banner -->
+<div class="continue-banner" id="continueBanner"></div>
+
+<!-- Player bar -->
+<div class="player">
+  <div class="player-row slider-row">
+    <span class="slider-label" id="posLabel">0 / 0</span>
+    <input type="range" class="slider" id="posSlider" min="0" max="0" value="0">
+  </div>
+  <div class="player-row">
+    <button class="player-btn" id="prevBtn" aria-label="Capítulo anterior">&#9664;&#9664;</button>
+    <button class="player-btn" id="rewindBtn" aria-label="Voltar frases">&#8630;</button>
+    <button class="player-btn play" id="playBtn" aria-label="Reproduzir">&#9654;</button>
+    <button class="player-btn" id="forwardBtn" aria-label="Avançar frases">&#8631;</button>
+    <button class="player-btn" id="nextBtn" aria-label="Próximo capítulo">&#9654;&#9654;</button>
+  </div>
+  <div class="player-row slider-row">
+    <span class="slider-label" id="speedLabel" title="Velocidade da voz">0.25x</span>
+    <input type="range" class="slider" id="speedSlider" min="0" max="8" value="3" step="1" aria-label="Velocidade">
+  </div>
+  <div class="player-row">
+    <div class="player-progress" id="playerProgress">Selecione um capítulo</div>
+    <button class="bookmark-btn" id="bookmarkBtn">&#128278; Marcar</button>
+  </div>
+</div>
+
+<!-- Drawer overlay -->
+<div class="drawer-overlay" id="drawerOverlay"></div>
+
+<!-- Drawer -->
+<nav class="drawer" id="drawer">
+  <div class="drawer-header">
+    <h2>Capítulos</h2>
+    <button class="drawer-close" id="drawerClose" aria-label="Fechar">&times;</button>
+  </div>
+  <ul class="drawer-list" id="chapterList"></ul>
+  <div class="drawer-section-title" id="bookmarkSectionTitle" style="display:none">Marcadores</div>
+  <ul class="drawer-list" id="bookmarkList"></ul>
+</nav>
+
+<script src="app.js?v=13"></script>
+</body>
+</html>
