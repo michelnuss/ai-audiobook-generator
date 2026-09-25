@@ -3,11 +3,12 @@
 import logging
 
 from agents import Agents
-from chunker import Chunk, build_chunks
+from chunker import Chunk, build_chunks, is_section_heading
 from config import Settings
 from docx_io import read_source, verify_output, write_translation
 from glossary import Glossary, GlossaryEntry, normalize
 from llm import LLM, RefusalError
+from progress import Progress
 from prompts import render_book, render_guidance, system_blocks
 from review import ReviewLog, render_book_review
 from state import (
@@ -42,6 +43,7 @@ class Pipeline:
             self.state.save()
         self.glossary = Glossary.from_list(self.state.data["glossary"])
         self.review = ReviewLog(settings.review_json, settings.review_md)
+        self.progress = Progress(cost=self.cost)
         self.agents = None
         if llm is not None:
             self.agents = Agents(llm, self.state.add_usage, effort=settings.effort,
@@ -70,6 +72,14 @@ class Pipeline:
     def chunk_of_paragraph(self) -> dict[str, str]:
         return {pid: c.id for c in self.chunks() for pid in c.paragraph_ids}
 
+    def cost(self) -> float:
+        usage = self.state.data["usage"]
+        return sum(usage[k] * PRICE[k] for k in PRICE) / 1_000_000
+
+    def chapters_in(self, chunk_id: str) -> int:
+        ids = self.state.chunk(chunk_id)["paragraph_ids"]
+        return sum(1 for pid in ids if is_section_heading(self.by_id[pid].text.replace("**", "")))
+
     def all_final(self) -> bool:
         return all(rec["status"] == FINAL for rec in self.state.data["chunks"].values())
 
@@ -78,8 +88,9 @@ class Pipeline:
     def run_bible(self, force: bool = False) -> None:
         if self.state.data["bible"] and not force:
             return
-        log.info("book bible: reading the whole book")
-        bible = self.agents.bible(self.system())
+        self.progress.say("▶ Book bible: reading the whole book (style guide, voices, terms)")
+        with self.progress.step("book bible"):
+            bible = self.agents.bible(self.system())
         for term in bible["terms"]:
             self.glossary.add(GlossaryEntry(term["source"], term["target"], term["rationale"], "bible"))
         self.review.add_bible_terms(bible["terms"])
@@ -96,9 +107,9 @@ class Pipeline:
         stage = rec["status"]
         try:
             if rec["status"] == PENDING:
-                log.info("%s: translating %d paragraphs (%s)", chunk_id, len(paras), rec["title"])
-                draft, flags = self.agents.translate(self.system(), paras, self.preceding_english(chunk_id),
-                                                     rec.get("reviewer_notes"))
+                with self.progress.step(f"translating {len(paras)} paragraphs"):
+                    draft, flags = self.agents.translate(self.system(), paras, self.preceding_english(chunk_id),
+                                                         rec.get("reviewer_notes"))
                 self.review.supersede_chunk(chunk_id, rec["version"])
                 self.review.add_flags(chunk_id, rec["version"], "translator", flags)
                 self.review.save()
@@ -107,8 +118,10 @@ class Pipeline:
 
             stage = rec["status"]
             if rec["status"] == TRANSLATED:
-                log.info("%s: doctrinal critique", chunk_id)
-                issues, flags = self.agents.critique(self.system(), paras, rec["draft"], rec.get("draft_flags", []))
+                with self.progress.step("doctrinal critique"):
+                    issues, flags = self.agents.critique(self.system(), paras, rec["draft"],
+                                                         rec.get("draft_flags", []))
+                self.progress.say(f"     critic found {len(issues)} issue(s)")
                 self.review.add_flags(chunk_id, rec["version"], "critic", flags)
                 self.review.save()
                 rec.update(issues=issues, status=CRITIQUED)
@@ -118,8 +131,8 @@ class Pipeline:
             if rec["status"] == CRITIQUED:
                 final = rec["draft"]
                 if rec["issues"]:
-                    log.info("%s: refining (%d issues)", chunk_id, len(rec["issues"]))
-                    final, flags = self.agents.refine(self.system(), paras, rec["draft"], rec["issues"])
+                    with self.progress.step(f"refining ({len(rec['issues'])} issues)"):
+                        final, flags = self.agents.refine(self.system(), paras, rec["draft"], rec["issues"])
                     self.review.add_flags(chunk_id, rec["version"], "refiner", flags)
                     self.review.save()
                 rec.update(final=final, status=FINAL, reviewer_notes=[], error=None)
@@ -127,27 +140,44 @@ class Pipeline:
 
             stage = rec["status"]
             if rec["status"] == NEEDS_REVISION:
-                log.info("%s: applying %d reviewer findings", chunk_id, len(rec["issues"]))
-                final, flags = self.agents.refine(self.system(), paras, rec["final"], rec["issues"])
+                with self.progress.step(f"applying {len(rec['issues'])} reviewer findings"):
+                    final, flags = self.agents.refine(self.system(), paras, rec["final"], rec["issues"])
                 rec["version"] += 1
                 self.review.add_flags(chunk_id, rec["version"], "refiner", flags)
                 self.review.save()
                 rec.update(final=final, status=FINAL, issues=[], error=None)
                 self.state.save()
         except RefusalError as exc:
-            log.error("%s: %s — skipping this chunk for now", chunk_id, exc)
+            self.progress.say(f"   ✗ {chunk_id}: {exc} — skipping this chunk for now")
             rec.update(status=FAILED, failed_stage=stage, error=str(exc))
             self.state.save()
 
     def run_chunks(self, limit: int | None = None) -> int:
+        ids = self.state.chunk_ids()
+        total_chapters = sum(self.chapters_in(cid) for cid in ids)
+
+        def finished() -> tuple[int, int]:
+            final = [cid for cid in ids if self.state.chunk(cid)["status"] == FINAL]
+            return len(final), sum(self.chapters_in(cid) for cid in final)
+
+        chunks_done, chapters_done = finished()
+        self.progress.say(f"Chunks done: {chunks_done}/{len(ids)} · chapters done: {chapters_done}/{total_chapters}")
         done = 0
-        for chunk_id in self.state.chunk_ids():
-            if self.state.chunk(chunk_id)["status"] == FINAL:
+        for n, chunk_id in enumerate(ids, start=1):
+            rec = self.state.chunk(chunk_id)
+            if rec["status"] == FINAL:
                 continue
             if limit is not None and done >= limit:
                 break
+            chapters = self.chapters_in(chunk_id)
+            self.progress.say(f"▶ Chunk {n}/{len(ids)} · {rec['title']} · "
+                              f"{chapters} chapter(s), {len(rec['paragraph_ids'])} paragraphs")
             self.process_chunk(chunk_id)
             done += 1
+            chunks_done, chapters_done = finished()
+            self.progress.say(f"■ Chunks done: {chunks_done}/{len(ids)} · chapters done: "
+                              f"{chapters_done}/{total_chapters} · running {self.progress.elapsed()} · "
+                              f"spent ≈ ${self.cost():,.2f}")
         return done
 
     def run_book_review(self, changed_only: bool = False) -> dict | None:
@@ -172,10 +202,11 @@ class Pipeline:
             for e in self.review.open_decisions()
             if focus is None or e["chunk"] in focus or e.get("reviewer") is None
         ]
-        log.info("book review: whole book, %d decisions%s", len(decisions),
-                 f", focus {', '.join(focus)}" if focus else "")
-        result = self.agents.review_book(self.system(), render_book(self.paragraphs, finals),
-                                         chunks_desc, decisions, focus)
+        self.progress.say(f"▶ Spiritist book review: whole book, {len(decisions)} decisions to judge"
+                          + (f", focus on {', '.join(focus)}" if focus else ""))
+        with self.progress.step("book review"):
+            result = self.agents.review_book(self.system(), render_book(self.paragraphs, finals),
+                                             chunks_desc, decisions, focus)
 
         round_no = self.state.data.get("review_rounds", 0) + 1
         self.review.apply_book_review(round_no, result, self.chunk_of_paragraph())
@@ -248,7 +279,7 @@ class Pipeline:
             extra = f"  ({rec['error']})" if rec.get("error") else ""
             lines.append(f"{cid:<6} {rec['status']:<15} {rec['version']:<4} {rec['title']}{extra}")
         usage = self.state.data["usage"]
-        cost = sum(usage[k] * PRICE[k] for k in PRICE) / 1_000_000
+        cost = self.cost()
         lines += [
             "",
             f"Book bible: {'done' if self.state.data['bible'] else 'not yet'} · "

@@ -7,6 +7,7 @@ Notes on the model (verified against the current API docs):
 """
 
 import json
+import os
 import logging
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -54,6 +55,13 @@ class LLM(Protocol):
 class FoundryLLM:
     def __init__(self, model: str, timeout: float = 1800.0):
         # SDK retries are disabled: tenacity owns retrying so backoff is not doubled.
+        # The SDK reads these variables itself and treats an empty `NAME=` line from .env
+        # as set, rejecting resource + base URL together. Keep only one, non-empty.
+        for name in ("ANTHROPIC_FOUNDRY_RESOURCE", "ANTHROPIC_FOUNDRY_BASE_URL"):
+            if not os.environ.get(name):
+                os.environ.pop(name, None)
+        if "ANTHROPIC_FOUNDRY_BASE_URL" in os.environ:
+            os.environ.pop("ANTHROPIC_FOUNDRY_RESOURCE", None)  # the full URL is more specific
         self.client = AnthropicFoundry(max_retries=0, timeout=timeout)
         self.model = model
 
@@ -89,7 +97,7 @@ class FoundryLLM:
             "cache_read_input_tokens": u.cache_read_input_tokens or 0,
             "cache_creation_input_tokens": u.cache_creation_input_tokens or 0,
         }
-        log.info("call: in=%d cache_read=%d cache_write=%d out=%d", usage["input_tokens"],
+        log.debug("call: in=%d cache_read=%d cache_write=%d out=%d", usage["input_tokens"],
                  usage["cache_read_input_tokens"], usage["cache_creation_input_tokens"],
                  usage["output_tokens"])
         return LLMResult(data=json.loads(text), usage=usage)

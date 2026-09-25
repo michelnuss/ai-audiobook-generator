@@ -79,3 +79,14 @@ def test_glossary_precedence():
     assert g.add(GlossaryEntry("perispirito", "perispirit (reviewed)", origin="reviewer"))
     assert "perispirit (reviewed)" in g.render()
     assert "HUMAN REVIEWER DECISION" in g.render()
+
+
+def test_foundry_client_ignores_empty_endpoint_setting(monkeypatch):
+    from llm import FoundryLLM
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_BASE_URL", "https://example.services.ai.azure.com/anthropic")
+    client = FoundryLLM("m").client
+    assert str(client.base_url).startswith("https://example.services.ai.azure.com/anthropic")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "example")
+    FoundryLLM("m")  # both filled in: no error
