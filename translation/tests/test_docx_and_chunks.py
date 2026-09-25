@@ -90,3 +90,34 @@ def test_foundry_client_ignores_empty_endpoint_setting(monkeypatch):
     assert str(client.base_url).startswith("https://example.services.ai.azure.com/anthropic")
     monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "example")
     FoundryLLM("m")  # both filled in: no error
+
+
+def test_dropped_connection_mid_stream_is_retried(monkeypatch):
+    import httpx2
+    from types import SimpleNamespace
+    from tenacity import wait_none
+    import llm
+
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_BASE_URL", "https://example.services.ai.azure.com/anthropic")
+    monkeypatch.setattr(llm.FoundryLLM.complete_json.retry, "wait", wait_none())
+    message = SimpleNamespace(
+        stop_reason="end_turn", content=[SimpleNamespace(type="text", text='{"ok": true}')],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, cache_read_input_tokens=0,
+                              cache_creation_input_tokens=0))
+    attempts = []
+
+    class Stream:
+        def __enter__(self):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise httpx2.ReadError("Connection reset by peer")
+            return SimpleNamespace(get_final_message=lambda: message)
+
+        def __exit__(self, *exc):
+            return False
+
+    client = llm.FoundryLLM("m")
+    monkeypatch.setattr(client.client.messages, "stream", lambda **kw: Stream())
+    result = client.complete_json(system=[], user="u", schema={}, effort="high", max_tokens=10)
+    assert result.data == {"ok": True} and len(attempts) == 2

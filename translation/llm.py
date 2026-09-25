@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 import anthropic
+import httpx2
 from anthropic import AnthropicFoundry
 from tenacity import (
     before_sleep_log,
@@ -30,6 +31,7 @@ RETRYABLE = (
     anthropic.InternalServerError,   # 500
     anthropic.ServiceUnavailableError,
     anthropic.OverloadedError,       # 529
+    httpx2.TransportError,           # connection dropped mid-stream (e.g. the Mac slept)
 )
 
 
