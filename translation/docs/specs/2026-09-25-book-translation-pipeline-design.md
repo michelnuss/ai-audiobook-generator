@@ -25,7 +25,7 @@ record of every non-obvious terminology decision.
 3. Interrupting the run at any point and re-running resumes at the first
    unfinished chunk without repeating paid work.
 4. `translation_review.md` lets a reviewer inspect every flagged decision —
-   with an independent judge's verdict — without reading the whole book.
+   with the whole-book Spiritist reviewer's verdict — without reading the whole book.
 5. A reviewer's term correction is applied by one command that re-translates
    only the affected chunks and rebuilds the document.
 
@@ -90,9 +90,8 @@ bible (once) ──► for each chunk in order:
                         │                                  │
                         └──────────────► validate ◄────────┘
                                             │
-                                         judge (independent)
-                                            │
                                    save state + review log
+                 ──► Spiritist Book Reviewer (whole book, once)
                  ──► build docx
 ```
 
@@ -102,14 +101,14 @@ bible (once) ──► for each chunk in order:
 |---|---|
 | `config.py` | Load `.env`; paths, model name, effort, chunk size |
 | `docx_io.py` | Read source into `Paragraph(id, text, speaker, highlight)`; write English docx |
-| `chunker.py` | Split paragraphs into chunks by `Capítulo N:` boundaries; split chapters > 2,500 words at paragraph boundaries |
+| `chunker.py` | Keep chapters (`Capítulo N:`, Prefácio, Posfácio) whole and pack consecutive chapters into chunks of up to 2,500 words (15 chunks for this book); split a larger chapter at paragraph boundaries |
 | `glossary.py` | Seed Spiritist glossary + merge bible terms + reviewer corrections; render for prompts |
 | `state.py` | `global_state.json` load/atomic save; chunk status; translations by paragraph id |
 | `prompts.py` | All prompt templates and JSON schemas |
 | `llm.py` | `AnthropicFoundry` client, streaming call, structured output parsing, `tenacity` retry |
-| `agents.py` | `BookBibleAgent`, `TranslatorAgent`, `CriticAgent`, `RefinerAgent`, `JudgeAgent` |
+| `agents.py` | `BookBibleAgent`, `TranslatorAgent`, `CriticAgent`, `RefinerAgent`, `BookReviewerAgent` |
 | `review.py` | Review log (JSON + Markdown render), corrections workflow |
-| `translate.py` | CLI: `bible`, `run`, `status`, `judge`, `apply-corrections`, `build` |
+| `translate.py` | CLI: `bible`, `run`, `review`, `status`, `apply-corrections`, `build` |
 | `tests/` | pytest suite with a fake LLM |
 | `.env.example`, `requirements.txt`, `README.md` | Setup |
 
@@ -148,21 +147,39 @@ Output: `{issues: [{id, severity, problem, suggested_fix}], flags: [...]}`.
 Input: source chunk, draft, issues. Output: same schema as translator (full
 chunk). Exactly one refinement pass per chunk.
 
-### 5.5 Independent Bilingual Judge (PT/EN)
-A separate reviewer that did not take part in producing the translation.
-- **Independence:** sees the source, the final English and the list of flagged
-  decisions (`original_term` → `assigned_translation` + context) — but **not**
-  the translator's or critic's reasoning, nor the critic's issues. This avoids
-  anchoring on the other agents' justifications.
-- Judges every flagged decision: `verdict ∈ {agree, disagree, uncertain}`,
-  `preferred_translation` (if disagree), `rationale`.
-- Raises **new findings** the other agents missed (same shape as a flag).
-- Scores the chunk 1–5 on: fidelity, doctrinal accuracy, English fluency,
-  speaker voice.
-- Does **not** edit text. Its output goes to the review log for the human.
-- A chunk with any score ≤ 3 or any `disagree` is marked `needs_attention`.
-- Runs automatically after each chunk; `translate.py judge [--chunk N]`
-  re-runs it standalone (e.g. after corrections).
+### 5.5 Spiritist Book Reviewer (whole book, independent)
+Acts as a senior reviewer/editor of Spiritist literature — fluent in Brazilian
+Portuguese and English, steeped in Allan Kardec's Codification (*The Spirits'
+Book*, *The Mediums' Book*, *The Gospel According to Spiritism*, *Heaven and
+Hell*, *Genesis*) and the established English Spiritist vocabulary (Anna
+Blackwell's translations, the International Spiritist Council's conventions).
+It reviews the translation the way a publisher's doctrinal reviewer reviews a
+manuscript: **reading the entire Portuguese book and the entire English
+translation side by side**, and deciding whether the English book is fit.
+
+- **Runs once, after every chunk is final** (`translate.py review`, invoked
+  automatically at the end of `run`). Input: the whole source book and the
+  whole English book, both labelled by paragraph id and speaker (~100k tokens,
+  well within the context window), plus the list of flagged decisions
+  (`original_term` → `assigned_translation` + context).
+- **Independence:** it never sees the translator's or critic's reasoning or the
+  critic's issues, so it cannot anchor on their justifications.
+- **Output (`review/book_review.json` + `review/book_review.md`):**
+  - `overall_verdict ∈ {fit_for_publication, fit_after_revisions, not_fit}` and
+    a reviewer's report (a few paragraphs, like a publisher's reader report).
+  - Scores 1–5 with commentary on: doctrinal fidelity to the Codification,
+    terminology consistency across the book, each character's voice across the
+    book (Ilana, Baruck, ET), narrative coherence, English literary quality,
+    suitability for being read aloud (podcast).
+  - Per-chapter assessment: verdict + short notes.
+  - A verdict on **every flagged decision**: `agree | disagree | uncertain`,
+    `preferred_translation`, `rationale` — now judged with whole-book context.
+  - **Findings**: concrete problems with `paragraph_ids`, `category`,
+    `severity (critical|major|minor)`, `problem`, `suggested_revision`.
+- It does **not** edit text. Findings and verdicts are added to the review log
+  for the human reviewer to accept or reject.
+- `--chapters` option re-reviews only chunks changed since the last review
+  (still with the whole book in context), used after corrections.
 
 ## 6. Validation
 
@@ -181,13 +198,14 @@ after every stage of every chunk):
   "source_file": "...", "source_sha256": "...",
   "bible_done": true,
   "chunks": {
-    "c03": {"paragraph_ids": ["P0102", "..."], "status": "judged",
-            "translations": {"P0102": "..."}, "judge": {...}}
+    "c03": {"paragraph_ids": ["P0102", "..."], "status": "final",
+            "translations": {"P0102": "..."}}}
   }
 }
 ```
 
-Chunk status progression: `pending → translated → critiqued → final → judged`.
+Chunk status progression: `pending → translated → critiqued → final`.
+The book review is tracked separately (`book_review_done`, `reviewed_chunks`).
 `run` resumes each chunk from its last completed stage. If the source file hash
 changes, the run refuses to continue and asks for `--reset`.
 
@@ -219,14 +237,14 @@ Precedence: reviewer correction > seed > bible term.
 
 `translation/review/translation_review.json` is the source of truth;
 `translation_review.md` is regenerated from it after every chunk, sorted with
-judge disagreements and `needs_attention` chunks first.
+reviewer disagreements and critical/major findings first.
 
 Entry:
 ```json
-{"id": "R0042", "chunk": "c03", "paragraph_id": "P0110", "source": "translator|critic|bible|judge",
+{"id": "R0042", "chunk": "c03", "paragraph_id": "P0110", "source": "translator|critic|bible|book_reviewer",
  "original_term": "sintonia", "assigned_translation": "attunement",
  "context_snippet": "...", "ai_reasoning": "...",
- "judge": {"verdict": "agree", "preferred_translation": null, "rationale": "..."},
+ "reviewer": {"verdict": "agree", "preferred_translation": null, "rationale": "..."},
  "review_status": "pending", "correction": null}
 ```
 
@@ -237,8 +255,13 @@ Reviewer workflow:
   1. adds the correction to the glossary as a locked term;
   2. finds every chunk whose source contains `original_term` (case- and
      accent-insensitive);
-  3. re-runs translate → critique → refine → judge for those chunks only;
+  3. re-runs translate → critique → refine for those chunks only;
   4. marks the entry `review_status: "applied"`, rebuilds the docx.
+- Book-reviewer finding to act on → set `"review_status": "accept"` (optionally
+  edit `correction` with the wording you want). `apply-corrections` sends
+  accepted findings to the Refiner as issues for the affected chunks.
+- After corrections, `translate.py review --changed` re-reviews the changed
+  chapters with the whole book in context.
 
 ## 10. Output document
 
@@ -277,7 +300,8 @@ pytest with a `FakeLLM` returning canned JSON:
 - state: atomic save, resume from each stage, source-hash guard.
 - review: flags appended, markdown rendered, `apply-corrections` selects the
   right chunks and locks the term.
-- judge: independence — its prompt never contains translator/critic reasoning.
+- book reviewer: prompt contains the whole source and translation and never
+  the translator/critic reasoning; findings land in the review log.
 
 A `--limit-chunks N` option allows a cheap real smoke test on the first chunk.
 
@@ -290,6 +314,6 @@ A `--limit-chunks N` option allows a cheap real smoke test on the first chunk.
 
 ## 14. Cost estimate
 
-~12–15 chunks × ~4 calls each with a ~55k-token cached prefix. Cache reads at
+~12–15 chunks × ~3 calls each plus one ~100k-token whole-book review with a ~55k-token cached prefix. Cache reads at
 $0.20/MTok make the prefix cheap; output (+thinking) dominates. Expected total
 for a full run: roughly $15–40 at effort `high`. `status` prints actual spend.
